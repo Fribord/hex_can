@@ -10,6 +10,7 @@
 
 -behaviour(gen_server).
 
+-include_lib("lager/include/log.hrl").
 -include_lib("can/include/can.hrl").
 -include_lib("hex/include/hex.hrl").
 
@@ -74,7 +75,7 @@ start_link() ->
 %% @end
 %%--------------------------------------------------------------------
 init([]) ->
-    case can_router:attch() of
+    case can_router:attach() of
 	ok -> 
 	    {ok, #state{}};
 	Error ->
@@ -97,6 +98,7 @@ init([]) ->
 %%--------------------------------------------------------------------
 handle_call({add_event,_Flags,Signal}, _From, State) ->
     Ref = make_ref(),
+    lager:debug("add_event: ref=~w, ~p ~p", [Ref, _Flags, Signal]),
     %% Interface = proplists:get_value(interface,Flags,-1),
     Subs = [{Ref, Signal} | State#state.subs],
     {reply, {ok,Ref}, State#state { subs = Subs }};
@@ -138,7 +140,7 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 handle_info(Frame=#can_frame{}, State) ->
     CobId = ?CANID_TO_COBID(Frame#can_frame.id),
-    Signal =
+    Sig =
 	case Frame#can_frame.data of
 	    <<16#80,Index:16/little,SubInd:8,Value:32/little>> ->
 		#hex_signal{id=CobId,
@@ -155,10 +157,11 @@ handle_info(Frame=#can_frame{}, State) ->
 			     source={can,Frame#can_frame.intf}
 			     }
 	end,
+    lager:debug("signal input ~p\n", [Sig]),
     lists:foreach(
-      fun({_Ref,SignalPattern}) ->
-	      case match(SignalPattern,Signal) of
-		  true -> hex_server ! Signal;
+      fun({_Ref,Pat}) ->
+	      case hex_server:match_pattern(Sig,Pat) of
+		  {true,_} -> hex_server ! Sig;
 		  false -> ignore
 	      end
       end, State#state.subs),
@@ -196,11 +199,4 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-match(Signal,_Rule={IDPat,ChanPat,TypePat,DataPat}) ->
-    case hex_server:match_value(IDPat,Signal#hex_signal.id) andalso 
-	hex_server:match_value(ChanPat,Signal#hex_signal.chan) andalso 
-	hex_server:match_value(TypePat,Signal#hex_signal.type) of
-	true -> hex_server:match_value(DataPat,Signal#hex_signal.value);
-	false -> false
-    end.
 
