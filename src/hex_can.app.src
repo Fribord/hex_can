@@ -1,0 +1,13 @@
+{application, hex_can,
+ [
+  {description, "hex CAN plugin"},
+  {vsn, git},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib,
+		  can
+                 ]},
+  {mod, { hex_can_app, []}},
+  {env, []}
+ ]}.
