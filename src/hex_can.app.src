@@ -6,8 +6,8 @@
   {applications, [
                   kernel,
                   stdlib,
-		  can
+		  can,
+		  hex
                  ]},
-  {mod, { hex_can_app, []}},
-  {env, []}
+  {mod, { hex_can_app, []}}
  ]}.
