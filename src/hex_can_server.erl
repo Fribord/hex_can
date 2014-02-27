@@ -161,7 +161,7 @@ handle_info(Frame=#can_frame{}, State) ->
     lists:foreach(
       fun({_Ref,Pat}) ->
 	      case hex_server:match_pattern(Sig,Pat) of
-		  {true,_} -> hex_server ! Sig;
+		  {true,_} -> hex_server:event(Sig, []);
 		  false -> ignore
 	      end
       end, State#state.subs),
