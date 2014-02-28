@@ -49,10 +49,14 @@ del_event(Ref) ->
 %%
 output(Flags, _Env) ->
     ID  = proplists:get_value(id, Flags),      %% mandatory
-    Len = proplists:get_value(len, Flags, -1), %% -1 = derive from data
+    Len0 = proplists:get_value(len, Flags, -1), %% -1 = derive from data
     Ext = proplists:get_bool(ext, Flags),      %% extended mode
     Rtr = proplists:get_bool(rtr, Flags),      %% request for transmission
-    Data = proplists:get_value(data, Flags,<<>>),  %% binary data
+    Data0 = proplists:get_value(data, Flags,<<>>),  %% binary data
+    Data  = erlang:iolist_to_binary(Data0),
+    Len = if Len0 < 0 -> byte_size(Data);
+	     true -> Len0
+	  end,
     can:send(ID,Len,Ext,Rtr,Data).
 
 %%
@@ -64,6 +68,7 @@ init_event(_Dir,_Flags) ->
 %%
 %% validate_event(in | out, Flags::[{atom(),term()}])
 %%
-validate_event(Dir, Flags) ->
+validate_event(_Dir, _Flags) ->
+    %% FIXME!!!
     ok.
 
