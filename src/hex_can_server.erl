@@ -31,7 +31,7 @@
 
 %% API
 -export([start_link/0, stop/0]).
--export([add_event/2, del_event/1]).
+-export([add_event/3, del_event/1]).
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3]).
@@ -55,8 +55,8 @@
 %%%===================================================================
 %%% API
 %%%===================================================================
-add_event(Flags, Signal) ->
-    gen_server:call(?MODULE, {add_event, Flags, Signal}).
+add_event(Flags, Signal, Cb) when is_atom(Cb); is_function(Cb,2) ->
+    gen_server:call(?MODULE, {add_event, Flags, Signal, Cb}).
 
 del_event(Ref) ->
     gen_server:call(?MODULE, {del_event, Ref}).
@@ -111,11 +111,11 @@ init([]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call({add_event,_Flags,Signal}, _From, State) ->
+handle_call({add_event,_Flags,Signal,Cb}, _From, State) ->
     Ref = make_ref(),
     lager:debug("add_event: ref=~w, ~p ~p", [Ref, _Flags, Signal]),
     %% Interface = proplists:get_value(interface,Flags,-1),
-    Subs = [{Ref, Signal} | State#state.subs],
+    Subs = [{Ref,Signal,Cb} | State#state.subs],
     {reply, {ok,Ref}, State#state { subs = Subs }};
 handle_call({del_event,Ref}, _From, State) ->
     case lists:keytake(Ref, State#state.subs) of
@@ -172,11 +172,12 @@ handle_info(Frame=#can_frame{}, State) ->
 			     source={can,Frame#can_frame.intf}
 			     }
 	end,
-    lager:debug("signal input ~p\n", [Sig]),
+    lager:debug("signal input ~p", [Sig]),
     lists:foreach(
-      fun({_Ref,Pat}) ->
+      fun({_Ref,Pat,Cb}) ->
 	      case hex_server:match_pattern(Sig,Pat) of
-		  {true,_} -> hex_server:event(Sig, []);
+		  {true,_} ->
+		      callback(Cb,Sig,[]);
 		  false -> ignore
 	      end
       end, State#state.subs),
@@ -213,5 +214,10 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+callback(Cb,Signal,Env) when is_atom(Cb) ->
+    Cb:event(Signal, Env);
+callback(Cb,Signal,Env) when is_function(Cb, 2) ->
+    Cb(Signal,Env).
 
 
