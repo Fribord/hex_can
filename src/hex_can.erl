@@ -30,7 +30,10 @@
 	 add_event/3, 
 	 del_event/1, 
 	 output/2]).
+-export([transmit/2]).
 
+-include_lib("can/include/can.hrl").
+-include_lib("hex/include/hex.hrl").
 %%
 %%  add_event(Flags::[{atom(),term()}, Signal::signal()) ->    
 %%     {ok, Ref:reference()} | {error, Reason}
@@ -72,3 +75,22 @@ validate_event(_Dir, _Flags) ->
     %% FIXME!!!
     ok.
 
+%%
+%% Transmit is like output but for hex_signal
+%%
+%% from canopen.hrl (not imported yet)
+-define(COBID_ENTRY_EXTENDED,       16#20000000).
+
+transmit(Signal, _Flags) ->
+    io:format("TRANSMIT: ~p\n", [Signal]),
+    COBID = Signal#hex_signal.id,
+    SubInd = Signal#hex_signal.chan,
+    Index = Signal#hex_signal.type,
+    Value = Signal#hex_signal.value,
+    {ID,Ext} = if COBID band ?COBID_ENTRY_EXTENDED =/= 0 ->
+		       {COBID band ?CAN_EFF_MASK, true};
+		  true ->
+		       {COBID band ?CAN_SFF_MASK, false}
+	       end,
+    Data = <<16#80,Index:16/little,SubInd:8,Value:32/little>>,
+    can:send(ID,8,Ext,false,Data).
