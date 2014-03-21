@@ -56,11 +56,23 @@ output(Flags, _Env) ->
     Ext = proplists:get_bool(ext, Flags),      %% extended mode
     Rtr = proplists:get_bool(rtr, Flags),      %% request for transmission
     Data0 = proplists:get_value(data, Flags,<<>>),  %% binary data
+    Intf = proplists:get_value(intf,Flags,0),
     Data  = erlang:iolist_to_binary(Data0),
     Len = if Len0 < 0 -> byte_size(Data);
 	     true -> Len0
 	  end,
-    can:send(ID,Len,Ext,Rtr,Data).
+    try can:create(ID,Len,Ext,Rtr,Intf,Data) of
+	Frame ->
+	    case whereis(hex_can_server) of
+		undefined ->
+		    can:send(Frame);
+		Pid ->
+		    can:send_from(Pid, Frame)
+	    end
+    catch
+	error:Reason ->
+	    lager:error("can parameter error ~p", [Reason])
+    end.
 
 %%
 %% init_event(in | out, Flags::[{atom(),term()}]) -> ok | {error,Reason}
@@ -71,9 +83,35 @@ init_event(_Dir,_Flags) ->
 %%
 %% validate_event(in | out, Flags::[{atom(),term()}])
 %%
-validate_event(_Dir, _Flags) ->
-    %% FIXME!!!
-    ok.
+validate_event(out, Flags) ->
+    hex:validate_flags(Flags, output_spec());
+validate_event(in, Flags) ->
+    hex:validate_flags(Flags, input_spec()).
+
+%% select input from interface intf (0 == all)
+%%   (not invert) &&     ( (frame.id & mask) == (id & mask) )
+%%   (invert) &&     not ( (frame.id & mask) == (id & mask) )
+%% default: intf=0, id=0, mask=0, invert=false
+%% => (not false) && (frame.id & 0) == (id & 0) == true && (0 == 0)
+%% 
+input_spec() ->
+    [
+     {id, optional, unsigned32, 0},
+     {mask, optional, unsigned32, 0},
+     {invert, optional, boolean, false},
+     {intf, optional, unsigned, 0}
+    ].
+
+%% fixme! id is mandatory for output, but not for transmit
+output_spec() ->
+    [
+     {id,  optional, unsigned32, 0}, 
+     {len, optional, {integer,-1,8}, -1},
+     {ext, optional, boolean, false},
+     {rtr, optional, boolean, false},
+     {data, optional, iolist, <<>>},
+     {intf, optional, unsigned, 0}
+    ].
 
 %%
 %% Transmit is like output but for hex_signal
@@ -82,7 +120,7 @@ validate_event(_Dir, _Flags) ->
 -define(COBID_ENTRY_EXTENDED,       16#20000000).
 
 transmit(Signal, _Flags) ->
-    io:format("TRANSMIT: ~p\n", [Signal]),
+    lager:debug("transmit: ~p", [Signal]),
     COBID = Signal#hex_signal.id,
     SubInd = Signal#hex_signal.chan,
     Index = Signal#hex_signal.type,
@@ -93,4 +131,15 @@ transmit(Signal, _Flags) ->
 		       {COBID band ?CAN_SFF_MASK, false}
 	       end,
     Data = <<16#80,Index:16/little,SubInd:8,Value:32/little>>,
-    can:send(ID,8,Ext,false,Data).
+    try can:create(ID,8,Ext,false,0,Data) of
+	Frame ->
+	    case whereis(hex_can_server) of
+		undefined ->
+		    can:send(Frame);
+		Pid ->
+		    can:send_from(Pid, Frame)
+	    end
+    catch
+	error:Reason ->
+	    lager:error("can transmit error ~p", [Reason])
+    end.

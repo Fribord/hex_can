@@ -27,7 +27,6 @@
 
 -include_lib("lager/include/log.hrl").
 -include_lib("can/include/can.hrl").
--include_lib("hex/include/hex.hrl").
 
 %% API
 -export([start_link/0, stop/0]).
@@ -38,8 +37,25 @@
 
 -define(SERVER, ?MODULE).
 
+-record(filter,
+	{
+	  intf = 0,
+	  id   = 0,
+	  mask = 0,
+	  invert = false
+	}).
+
+-record(sub,
+	{
+	  ref     :: reference(),
+	  filter  :: #filter{},
+	  signal   :: term(),
+	  callback :: atom() | function()
+	}).
+
 -record(state, {
-	  subs = [] :: [{Ref::reference(),Signal::term()}]
+	  joined :: boolean(),   %% is joined to hex server?
+	  subs = [] :: [#sub{}]
 	 }).
 
 %% from canopen.hrl (not imported yet)
@@ -56,7 +72,7 @@
 %%% API
 %%%===================================================================
 add_event(Flags, Signal, Cb) when is_atom(Cb); is_function(Cb,2) ->
-    gen_server:call(?MODULE, {add_event, Flags, Signal, Cb}).
+    gen_server:call(?MODULE, {add_event, self(), Flags, Signal, Cb}).
 
 del_event(Ref) ->
     gen_server:call(?MODULE, {del_event, Ref}).
@@ -90,9 +106,10 @@ start_link() ->
 %% @end
 %%--------------------------------------------------------------------
 init([]) ->
+    Joined = hex:auto_join(hex_can),
     case can_router:attach() of
 	ok -> 
-	    {ok, #state{}};
+	    {ok, #state{joined=Joined}};
 	Error ->
 	    {stop, Error}
     end.
@@ -111,17 +128,24 @@ init([]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call({add_event,_Flags,Signal,Cb}, _From, State) ->
-    Ref = make_ref(),
-    lager:debug("add_event: ref=~w, ~p ~p", [Ref, _Flags, Signal]),
+handle_call({add_event,Pid,Flags,Signal,Cb}, _From, State) ->
+    Ref = erlang:monitor(process,Pid),
+    lager:debug("add_event: ref=~w, ~p ~p", [Ref, Flags, Signal]),
     %% Interface = proplists:get_value(interface,Flags,-1),
-    Subs = [{Ref,Signal,Cb} | State#state.subs],
+    F = #filter { id = proplists:get_value(id, Flags, 0),
+		  mask = proplists:get_value(mask, Flags, 0),
+		  invert = proplists:get_bool(invert, Flags),
+		  intf   = proplists:get_value(intf, Flags, 0)
+		},
+    Sub = #sub { ref=Ref, filter=F, signal=Signal, callback=Cb},
+    Subs = [Sub | State#state.subs],
     {reply, {ok,Ref}, State#state { subs = Subs }};
 handle_call({del_event,Ref}, _From, State) ->
-    case lists:keytake(Ref, State#state.subs) of
-	false -> 
+    case lists:keytake(Ref, #sub.ref, State#state.subs) of
+	false ->
 	    {reply, ok, State};
-	{value,_, Subs} ->
+	{value, Sub, Subs} ->
+	    erlang:demonitor(Sub#sub.ref),
 	    {reply, ok, State#state { subs = Subs}}
     end;
 handle_call(stop, _From, State) ->
@@ -155,35 +179,39 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 handle_info(Frame=#can_frame{}, State) ->
     CobId = ?CANID_TO_COBID(Frame#can_frame.id),
-    Sig =
-	case Frame#can_frame.data of
-	    <<16#80,Index:16/little,SubInd:8,Value:32/little>> ->
-		#hex_signal{id=CobId,
-			    chan=SubInd,
-			    type=Index,
-			    value=Value,
-			    source={can,Frame#can_frame.intf}
-			   };
-	    BinData ->
-		#hex_signal {id=CobId,
-			     chan=0,
-			     type=0,
-			     value=BinData,
-			     source={can,Frame#can_frame.intf}
-			     }
-	end,
-    lager:debug("signal input ~p", [Sig]),
+    Env = case Frame#can_frame.data of
+	      <<16#80,Index:16/little,SubInd:8,Value:32/little>> ->
+		  [{id,CobId},
+		   {chan,SubInd},
+		   {type,Index},
+		   {value,Value},
+		   {data,Frame#can_frame.data},
+		   {source, {can,Frame#can_frame.intf}}];
+	      _BinData ->
+		  [{id,CobId},
+		   {data,Frame#can_frame.data},
+		   {source, {can,Frame#can_frame.intf}}]
+	  end,
+    lager:debug("can signal env = ~p\n", [Env]),
     lists:foreach(
-      fun({_Ref,Pat,Cb}) ->
-	      case hex_server:match_pattern(Sig,Pat) of
-		  {true,_} ->
-		      callback(Cb,Sig,[]);
+      fun(#sub{signal=Sig,callback=Cb,filter=F}) ->
+	      case match_filter(Frame, F) of
+		  true ->
+		      callback(Cb,Sig,Env);
 		  false -> ignore
 	      end
       end, State#state.subs),
     {noreply, State};
+handle_info({'DOWN',Ref,process,_Pid,_Reason}, State) ->
+    lager:debug("monitor DOWN ~p ~p", [_Pid,_Reason]),
+    case lists:keytake(Ref, #sub.ref, State#state.subs) of
+	false ->
+	    {noreply, State};
+	{value, _Sub, Subs} ->
+	    {noreply, State#state { subs = Subs}}
+    end;
 handle_info(_Info, State) ->
-    lager:debug("got info ~p", [_Info]),
+    lager:debug("unhandled info ~p", [_Info]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -220,4 +248,12 @@ callback(Cb,Signal,Env) when is_atom(Cb) ->
 callback(Cb,Signal,Env) when is_function(Cb, 2) ->
     Cb(Signal,Env).
 
-
+%% the expression below says:
+%% the interface must match unless set to 0 (ignore)
+%% otherwise the frameid must match the id and mask expression
+%% or must not match if invert logic (not for interface!) is used.
+%%
+match_filter(Frame, #filter { intf=Intf, id=ID, mask=Mask, invert=Invert }) ->
+    ((Intf =:= 0) orelse (Intf =:= Frame#can_frame.intf))
+	andalso
+	  ( ((Frame#can_frame.id band Mask) =:= (ID band Mask))  =/= Invert ).
