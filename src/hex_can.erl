@@ -26,7 +26,9 @@
 -behaviour(hex_plugin).
 
 -export([validate_event/2, 
+	 event_spec/1,
 	 init_event/2,
+	 mod_event/2,
 	 add_event/3, 
 	 del_event/1, 
 	 output/2]).
@@ -81,12 +83,16 @@ init_event(_Dir,_Flags) ->
     ok.
 
 %%
+%% mod_event(in | out, Flags::[{atom(),term()}])
+%%
+mod_event(_, _) ->
+    ok.
+
+%%
 %% validate_event(in | out, Flags::[{atom(),term()}])
 %%
-validate_event(out, Flags) ->
-    hex:validate_flags(Flags, output_spec());
-validate_event(in, Flags) ->
-    hex:validate_flags(Flags, input_spec()).
+validate_event(Dir, Flags) ->
+    hex:validate_flags(Flags, event_spec(Dir)).
 
 %% select input from interface intf (0 == all)
 %%   (not invert) &&     ( (frame.id & mask) == (id & mask) )
@@ -94,23 +100,22 @@ validate_event(in, Flags) ->
 %% default: intf=0, id=0, mask=0, invert=false
 %% => (not false) && (frame.id & 0) == (id & 0) == true && (0 == 0)
 %% 
-input_spec() ->
+event_spec(in) ->
     [
-     {id, optional, unsigned32, 0},
-     {mask, optional, unsigned32, 0},
-     {invert, optional, boolean, false},
-     {intf, optional, unsigned, 0}
-    ].
-
+     {leaf, id, [{type,uint32,[]},{default,0,[]}]},
+     {leaf, mask, [{type,uint32,[]},{default,0,[]}]},
+     {leaf, invert, [{type,boolean,[]},{default,false,[]}]},
+     {leaf, intf, [{type,uint32,[]},{default,0,[]}]}
+    ];
 %% fixme! id is mandatory for output, but not for transmit
-output_spec() ->
+event_spec(out) ->
     [
-     {id,  optional, unsigned32, 0}, 
-     {len, optional, {integer,-1,8}, -1},
-     {ext, optional, boolean, false},
-     {rtr, optional, boolean, false},
-     {data, optional, iolist, <<>>},
-     {intf, optional, unsigned, 0}
+     {leaf, id,  [{type,uint32,[]},{default,0,[]}]},
+     {leaf, len, [{type,int8,[{range,[{-1,8}],[]}]},{default,-1,[]}]},
+     {leaf, ext, [{type,boolean,[]},{default,false,[]}]},
+     {leaf, rtr, [{type,boolean,[]},{default,false,[]}]},
+     {leaf, data, [{type,binary,[]},{default,<<>>,[]}]},
+     {leaf, intf, [{type,uint32,[]},{default,0,[]}]}
     ].
 
 %%
